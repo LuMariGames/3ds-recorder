@@ -1844,6 +1844,7 @@ static void Capture(int sc, u32 pa, u32 fmt, u32 stride, u32 timeUs, bool isStat
 typedef struct {
     u32 lastAddr, lastSel, lastFmt, lastStride;
     u64 lastNewUs, lastCapUs;   /* last swap seen; last capture slot (taken or throttled) */
+    u64 nextCapUs;              /* phase-locked deadline for the next capture slot */
     u64 lastRealUs;             /* last frame actually captured */
     u64 modeUs;                 /* when its mode (format, stride, VRAM / FCRAM) last changed */
     bool vram;
@@ -1868,7 +1869,7 @@ static bool IsVram(u32 pa) { return pa >= VRAM_PA && pa < VRAM_PA + VRAM_SIZE; }
 static u32 PollScreens(void)
 {
     const u64 nowUs = TicksToUs(Ticks() - g_recStartTick);
-    const u32 gapUs = 1000000u / g_cfg.fps - 8000u;   /* 30 fps -> 25 ms: tolerates 60 Hz jitter */
+    const u32 framePeriodUs = 1000000u / g_cfg.fps;   /* fixed cadence: 30 fps -> 33.333 ms */
     const u32 fill = RingFill();
     u64 wakeUs = nowUs + 20000u;
     for (int sc = 0; sc < 2; sc++)
@@ -1903,7 +1904,7 @@ static u32 PollScreens(void)
                 g_appSwapSeen = true;
             }
         }
-        const u64 dueUs = t->hasCap ? t->lastCapUs + gapUs : nowUs;
+        const u64 dueUs = t->hasCap ? t->nextCapUs : nowUs;
         if (dueUs < wakeUs + POLL_EARLY_US)
             wakeUs = dueUs > POLL_EARLY_US ? dueUs - POLL_EARLY_US : 0;
         const bool due = !t->hasCap || nowUs >= dueUs;
@@ -1917,6 +1918,16 @@ static u32 PollScreens(void)
             continue;
         if (t->hasCap && nowUs - t->modeUs < MODE_SETTLE_US)
             continue;   /* the screen's mode just changed: let it settle */
+        /* Advance from the previous deadline, not from the time this poll happened.
+           If polling or DMA load made us late by multiple periods, skip those missed
+           slots instead of shifting the cadence or trying to catch up in a burst. */
+        if (!t->hasCap)
+            t->nextCapUs = nowUs + framePeriodUs;
+        else
+        {
+            const u64 missed = (nowUs - t->nextCapUs) / framePeriodUs + 1u;
+            t->nextCapUs += missed * framePeriodUs;
+        }
         t->lastCapUs = nowUs;
         t->hasCap = true;
         if (fill > g_ringSize / 100u * THROTTLE_PCT)
