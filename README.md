@@ -15,6 +15,22 @@
   <img src="docs/screenshots/en/download.png" width="260" alt="Download to a phone">
 </p>
 
+### Demo
+
+<!-- the demo video: docs/demo.mp4 (kept locally), uploaded as a GitHub attachment -->
+
+https://github.com/user-attachments/assets/122e7c76-d4c6-4f60-9426-aeed7d322776
+
+*Recorded on an Old 3DS with 3DS Recorder itself: Mario Kart 7, both screens with sound. This is the MP4 the console
+made, as it is (400 × 480), only cut shorter.*
+
+More recordings, as they came out:
+
+- [Old 3DS — HOME Menu and a Mario Kart 7 race](https://github.com/BolgarMaxym97/3ds-recorder/releases/download/v1.0.0/demo-old3ds-mk7.mp4) (2 min 19 s, 32 MB): the full
+  video the clip above is cut from.
+- [New 3DS XL — Resident Evil Revelations](https://github.com/BolgarMaxym97/3ds-recorder/releases/download/v1.0.0/demo-new3ds-re-revelations.mp4) (55 s, 11 MB): sent in
+  by a tester; the recording was turned into MP4 on a computer with `tools/r3d2mp4.sh`.
+
 ---
 
 <a id="english"></a>
@@ -29,27 +45,29 @@ the game sound. Press a button combination to start, press it again to stop — 
 You do not need a PC or a capture card. The console turns each recording into a small MP4 video by itself, and you can
 send it to your phone over Wi-Fi by scanning a QR code.
 
-> [!WARNING]
-> **This is a beta (0.11.4).** It has been tested on an Old 3DS and a New 3DS XL with Luma3DS 13.5, but not on every
-> console, game and SD card, so bugs are possible. If something goes wrong, please
-> [open an issue](../../issues/new) and attach the log (see [Problems and feedback](#problems-and-feedback)) —
-> every report helps make the release better.
-
 ### What you need
 
 - A Nintendo 3DS, 3DS XL, 2DS, New 3DS, New 3DS XL or New 2DS XL with **Luma3DS** custom firmware.
 - **FBI** to install the `.cia` (or the Homebrew Launcher for the `.3dsx`).
-- Free space on the SD card: up to **~320 MB per minute** in 3D games (both screens, 30 fps; menus and 2D games take much less). The MP4 made from it is about 10 MB a minute.
+- Free space on the SD card: up to **~320 MB per minute** in 3D games (both screens, 30 fps; menus and 2D games take much less). The MP4 made from it is about 25 MB a minute.
 - To get videos on your phone: the phone and the console on the same Wi-Fi network (the console uses 2.4 GHz).
 
 ### Install
 
-1. Download `3ds-recorder.cia` (or `3ds-recorder.3dsx`) from [Releases](../../releases).
-2. Copy it to the SD card and install the `.cia` with FBI (the `.3dsx` goes to `/3ds/`).
+The newest version is always on the [Releases page](https://github.com/BolgarMaxym97/3ds-recorder/releases/latest): each release has `3ds-recorder.cia` and
+`3ds-recorder.3dsx` under **Assets**. You need only one of them: the `.cia` puts an icon in the HOME Menu, the `.3dsx`
+runs from the Homebrew Launcher.
+
+1. Download `3ds-recorder.cia` (or `3ds-recorder.3dsx`) from the [latest release](https://github.com/BolgarMaxym97/3ds-recorder/releases/latest).
+2. Copy it to the SD card. Install the `.cia` with FBI: SD → the file → **Install CIA**. The `.3dsx` needs no
+   install: put it in the `/3ds/` folder.
 3. Turn the console on while holding **SELECT** to open the Luma menu. Turn on
    **Enable loading external FIRMs and modules** and save with **START**.
 4. Open **3DS Recorder**, choose your language and read the short guide. The recorder starts by itself: the
    notification LED glows blue for a moment.
+
+**To update,** install the new `.cia` over the old one (or replace the `.3dsx`) and open the app: it updates the
+recorder by itself. Settings and recordings stay.
 
 ### How to use
 
@@ -66,8 +84,11 @@ send it to your phone over Wi-Fi by scanning a QR code.
   and tap **Save the video**. Nothing to install on the phone; iPhone and Android both work.
 - **Or take it from the SD card:** recordings are in `/3ds/recorder/recordings/`. Next to each recording
   (`.r3d`) the console makes an `.mp4` that plays anywhere.
-- **Settings:** frame rate (15 / 20 / 30 fps), both screens, the top one or the bottom one only, sound on or off, the LED, the language
-  and the button combination.
+- **Settings:** frame rate (15 / 20 / 30 fps), both screens, the top one or the bottom one only, quality, sound on or off, the LED,
+  the language and the button combination.
+- **Quality:** with **Auto** a picture that changes all over (a 3D game in motion) is stored the way video is, colour at half
+  the resolution, so both screens keep up to 30 frames a second on an Old 3DS; menus, 2D games and still pictures stay exact.
+  **Lossless** keeps every frame exact; in 3D games the SD card then cannot take every frame and the video is less smooth.
 
 <p align="center">
   <img src="docs/screenshots/en/settings.png" width="260" alt="Settings">
@@ -102,7 +123,8 @@ stay unless you tick the box. Luma settings are not changed.
 
 ### Problems and feedback
 
-This is a beta: every report helps. Please open an [issue](../../issues/new), say what you did and what happened
+3DS Recorder has been tested on an Old 3DS and a New 3DS XL with Luma3DS 13.5, but not on every console, game and SD
+card. If something goes wrong, please open an [issue](../../issues/new), say what you did and what happened
 (console model, game), and attach the log: on the phone page (the QR code) tap
 **Log for the developer** at the bottom, or copy `/3ds/recorder/app.log` and `recorder.log` from the SD card.
 
@@ -120,7 +142,7 @@ tools/dkp.sh app make cia         # app/3ds-recorder.cia and .3dsx
 
 | Folder | What |
 |---|---|
-| `sysmod/` | the recorder: reads the screens and the sound, compresses them (XR32, lossless) and writes `.r3d` |
+| `sysmod/` | the recorder: reads the screens and the sound, compresses them (XR32, lossless; C420 for pictures in motion) and writes `.r3d` |
 | `app/` | the app: install, settings, gallery, player, the Wi-Fi server for the phone |
 | `plugin/` | the launcher plugin for extended-memory games on an Old 3DS (starts the recorder again inside the game) |
 | `prep/` | turns an `.r3d` into MP4 (H.264 + AAC) on the console |
@@ -153,6 +175,20 @@ Their licenses are next to their code in `third_party/`, `web/vendor/` and `app/
   <img src="docs/screenshots/uk/download.png" width="260" alt="Завантаження на телефон">
 </p>
 
+### Демо
+
+https://github.com/user-attachments/assets/122e7c76-d4c6-4f60-9426-aeed7d322776
+
+*Записано на Old 3DS самим 3DS Recorder: Mario Kart 7, обидва екрани зі звуком. Це MP4, який зробила сама консоль,
+як є (400 × 480), лише обрізаний.*
+
+Ще записи, як вони вийшли:
+
+- [Old 3DS — меню HOME і заїзд у Mario Kart 7](https://github.com/BolgarMaxym97/3ds-recorder/releases/download/v1.0.0/demo-old3ds-mk7.mp4) (2 хв 19 с, 32 MB): повне
+  відео, з якого вирізано кліп вище.
+- [New 3DS XL — Resident Evil Revelations](https://github.com/BolgarMaxym97/3ds-recorder/releases/download/v1.0.0/demo-new3ds-re-revelations.mp4) (55 с, 11 MB): надіслав
+  тестувальник; запис перетворено на MP4 на комп'ютері через `tools/r3d2mp4.sh`.
+
 ### Що це
 
 3DS Recorder записує всю консоль: усе, що на екранах, у будь-якій грі, меню HOME чи системній програмі, разом зі
@@ -161,26 +197,29 @@ Their licenses are next to their code in `third_party/`, `web/vendor/` and `app/
 Не потрібні ні комп'ютер, ні карта захоплення. Консоль сама перетворює кожен запис на невелике відео MP4, а забрати
 його на телефон можна по Wi-Fi, відсканувавши QR-код.
 
-> [!WARNING]
-> **Це бета-версія (0.11.4).** Її перевірено на Old 3DS і New 3DS XL з Luma3DS 13.5, але не на кожній консолі, грі
-> й SD-картці, тож можливі баги. Якщо щось пішло не так, будь ласка, [створіть issue](../../issues/new) і додайте
-> журнал (див. [Проблеми і відгуки](#проблеми-і-відгуки)) — кожен звіт допомагає зробити реліз кращим.
-
 ### Що потрібно
 
 - Nintendo 3DS, 3DS XL, 2DS, New 3DS, New 3DS XL або New 2DS XL з кастомною прошивкою **Luma3DS**.
 - **FBI**, щоб встановити `.cia` (або Homebrew Launcher для `.3dsx`).
-- Вільне місце на SD-картці: до **~320 MB на хвилину** у 3D-іграх (обидва екрани, 30 fps; меню і 2D-ігри займають набагато менше). MP4 з такого запису — близько 10 MB на хвилину.
+- Вільне місце на SD-картці: до **~320 MB на хвилину** у 3D-іграх (обидва екрани, 30 fps; меню і 2D-ігри займають набагато менше). MP4 з такого запису — близько 25 MB на хвилину.
 - Щоб отримати відео на телефон: телефон і консоль в одній Wi-Fi мережі (консоль працює на 2.4 GHz).
 
 ### Встановлення
 
-1. Завантажте `3ds-recorder.cia` (або `3ds-recorder.3dsx`) з [Releases](../../releases).
-2. Скопіюйте на SD-картку і встановіть `.cia` через FBI (`.3dsx` кладеться в `/3ds/`).
+Найновіша версія завжди лежить на [сторінці Releases](https://github.com/BolgarMaxym97/3ds-recorder/releases/latest): у кожному релізі в розділі **Assets** є
+`3ds-recorder.cia` і `3ds-recorder.3dsx`. Потрібен лише один із них: `.cia` додає іконку в меню HOME, `.3dsx`
+запускається з Homebrew Launcher.
+
+1. Завантажте `3ds-recorder.cia` (або `3ds-recorder.3dsx`) з [останнього релізу](https://github.com/BolgarMaxym97/3ds-recorder/releases/latest).
+2. Скопіюйте файл на SD-картку. `.cia` встановіть через FBI: SD → файл → **Install CIA**. `.3dsx` встановлювати
+   не треба: покладіть його в теку `/3ds/`.
 3. Увімкніть консоль із затиснутою **SELECT** — відкриється меню Luma. Увімкніть
    **Enable loading external FIRMs and modules** і збережіть кнопкою **START**.
 4. Відкрийте **3DS Recorder**, виберіть мову і прочитайте короткий гайд. Рекордер запуститься сам: індикатор LED
    на мить засвітиться синім.
+
+**Щоб оновити,** встановіть новий `.cia` поверх старого (або замініть `.3dsx`) і відкрийте додаток: рекордер він
+оновить сам. Налаштування і записи лишаються.
 
 ### Як користуватися
 
@@ -197,8 +236,11 @@ Their licenses are next to their code in `third_party/`, `web/vendor/` and `app/
   **Зберегти відео**. На телефон нічого ставити не треба; працює і на iPhone, і на Android.
 - **Або забрати з SD-картки:** записи лежать у `/3ds/recorder/recordings/`. Поруч із кожним записом (`.r3d`)
   консоль робить `.mp4`, яке відтворюється будь-де.
-- **Налаштування:** частота кадрів (15 / 20 / 30 fps), обидва екрани, лише верхній чи лише нижній, звук, LED, мова і комбінація
-  кнопок.
+- **Налаштування:** частота кадрів (15 / 20 / 30 fps), обидва екрани, лише верхній чи лише нижній, якість, звук, LED, мова і
+  комбінація кнопок.
+- **Якість:** в режимі **Авто** картинка, яка змінюється вся (3D-гра в русі), зберігається як у відео — колір із половинною
+  роздільністю, тому на Old 3DS обидва екрани тримають до 30 кадрів на секунду; меню, 2D-ігри й нерухомі картинки лишаються
+  точними. **Без втрат** зберігає кожен кадр точно; у 3D-іграх SD-картка тоді не встигає за всіма кадрами і відео менш плавне.
 
 <p align="center">
   <img src="docs/screenshots/uk/settings.png" width="260" alt="Налаштування">
@@ -232,7 +274,8 @@ Their licenses are next to their code in `third_party/`, `web/vendor/` and `app/
 
 ### Проблеми і відгуки
 
-Це бета: кожен звіт допомагає. Будь ласка, створіть [issue](../../issues/new), напишіть, що робили і що сталося
+3DS Recorder перевірено на Old 3DS і New 3DS XL з Luma3DS 13.5, але не на кожній консолі, грі й SD-картці. Якщо щось
+пішло не так, будь ласка, створіть [issue](../../issues/new), напишіть, що робили і що сталося
 (модель консолі, гра), і додайте журнал: на сторінці в телефоні (через QR-код) унизу натисніть
 **Журнал для розробника**, або скопіюйте з SD-картки `/3ds/recorder/app.log` і `recorder.log`.
 

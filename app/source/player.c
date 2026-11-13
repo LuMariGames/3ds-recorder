@@ -18,6 +18,10 @@
 #define QUEUE_MAX 96                 /* video records read ahead, still compressed ... */
 #define QUEUE_BYTES (4u << 20)       /* ... and their bytes */
 #define DUE_US 60000u                /* a frame is decoded this long before its time */
+#define LATE_US 50000u               /* a frame this long past its time is not shown */
+#define THIN_STEP_US 500000u         /* still late this long after thinning began: thin the top screen too */
+#define THIN_CALM_US 4000000u        /* no late frame for this long: one step back */
+#define AUDIO_LOW 4                  /* sound buffers queued (of WAVE_BUFS): fewer, and the sound is read first */
 #define AUDIO_PAD_LAG_US 200000u     /* a video record this far past the sound: silence up to it */
 #define WAVE_BUFS 28                 /* ~0.87 s: more than LEAD_US, so writing sound never waits */
 #define WAVE_SAMPLES 1024            /* stereo samples per DSP buffer (~31 ms) */
@@ -83,6 +87,8 @@ static u32 g_baseUs;                 /* clock at the last start or seek */
 static u64 g_wallStart;              /* osGetTime() at that point (no sound), paused time excluded */
 static u64 g_pausedAt;
 static bool g_paused, g_ended;
+static u32 g_thin, g_thinN[2], g_thinUs, g_framesThinned;   /* thinning level 0-2 (decode_due) */
+static u32 g_framesLate;             /* frames past their time when their turn came: not shown */
 static u32 g_framesShown, g_framesSkipped; /* pictures published / not (no free slot), for app.log */
 static u32 g_audioStarved;
 static bool g_audioFresh = true;           /* no sound queued since the start or a seek */                 /* sound buffers queued with the DSP's queue already empty (a gap heard) */
@@ -94,6 +100,48 @@ static volatile u32 g_seekShowUs;
 
 /* ------------------------------------------------------------------ reading */
 
+/* The next piece of the file is read by a thread of its own while this one decodes. With both in
+   one thread a recording at 29 + 28 pictures a second (4.7 MB/s) had 1258 of its pictures shown in
+   31 s, 87 late and 406 thinned out: the card took about half of the thread's time (O3DS 0.12.6,
+   2026-11-13). g_preState: 0 nothing, 1 being read, 2 read (g_preLen bytes from g_preOff). Only
+   fill() asks for a piece and only it takes one; a seek's own reads wait for the thread first. */
+static Thread g_preThread;
+static LightEvent g_preWake;
+static u8 *g_pre;
+static u64 g_preOff;
+static volatile u32 g_preLen, g_preState;
+
+static void pre_main(void *arg)
+{
+    (void)arg;
+    while (!g_quit) {
+        if (__atomic_load_n(&g_preState, __ATOMIC_ACQUIRE) != 1) {
+            LightEvent_WaitTimeout(&g_preWake, 50 * 1000 * 1000);
+            continue;
+        }
+        u32 got = 0;
+        const u64 left = g_size - g_preOff;
+        if (R_FAILED(FSFILE_Read(g_file, &got, g_preOff, g_pre, (u32)(left < READ_BUF ? left : READ_BUF))))
+            got = 0;
+        g_preLen = got;
+        __atomic_store_n(&g_preState, 2, __ATOMIC_RELEASE);
+    }
+}
+
+/* Waits for a read under way; true when a piece is there. */
+static bool pre_wait(void)
+{
+    while (__atomic_load_n(&g_preState, __ATOMIC_ACQUIRE) == 1 && g_preThread)
+        svcSleepThread(500 * 1000);
+    return __atomic_load_n(&g_preState, __ATOMIC_ACQUIRE) == 2;
+}
+
+static void pre_drop(void)
+{
+    pre_wait();
+    __atomic_store_n(&g_preState, 0, __ATOMIC_RELEASE);
+}
+
 static bool fill(u32 need)
 {
     if (g_bufLen - g_pos >= need)
@@ -103,18 +151,39 @@ static bool fill(u32 need)
     g_bufLen -= g_pos;
     g_pos = 0;
     while (g_bufLen < need && g_bufOff + g_bufLen < g_size) {
-        u32 got = 0;
-        const u64 left = g_size - (g_bufOff + g_bufLen);
+        const u64 end = g_bufOff + g_bufLen;
+        const u64 left = g_size - end;
         const u32 want = (u32)(left < READ_BUF - g_bufLen ? left : READ_BUF - g_bufLen);
-        if (R_FAILED(FSFILE_Read(g_file, &got, g_bufOff + g_bufLen, g_buf + g_bufLen, want)) || !got)
+        if (g_preState && g_preOff == end && pre_wait() && g_preLen) {
+            /* the piece read meanwhile; what does not fit stays for the next time */
+            const u32 n = g_preLen < want ? g_preLen : want;
+            memcpy(g_buf + g_bufLen, g_pre, n);
+            g_bufLen += n;
+            if (n < g_preLen) {
+                memmove(g_pre, g_pre + n, g_preLen - n);
+                g_preOff += n;
+                g_preLen -= n;
+            } else
+                __atomic_store_n(&g_preState, 0, __ATOMIC_RELEASE);
+            continue;
+        }
+        pre_drop();   /* another place in the file, or nothing read */
+        u32 got = 0;
+        if (R_FAILED(FSFILE_Read(g_file, &got, end, g_buf + g_bufLen, want)) || !got)
             break;
         g_bufLen += got;
+    }
+    if (!g_preState && g_preThread && g_bufOff + g_bufLen < g_size) {
+        g_preOff = g_bufOff + g_bufLen;
+        __atomic_store_n(&g_preState, 1, __ATOMIC_RELEASE);
+        LightEvent_Signal(&g_preWake);
     }
     return g_bufLen - g_pos >= need;
 }
 
 static void reposition(u64 off)
 {
+    pre_drop();   /* a seek reads the file itself */
     g_bufOff = off;
     g_bufLen = g_pos = 0;
     g_eof = false;
@@ -137,7 +206,7 @@ static bool plausible(const R3dRecHeader *h)
         return h->len <= (1u << 20);
     if (m == R3D_MAGIC_AUDIO)
         return h->len <= 4096 && h->cols == 160;
-    return (m == R3D_MAGIC_YFRAME || m == R3D_MAGIC_HFRAME || m == R3D_MAGIC_QFRAME || m == R3D_MAGIC_XFRAME ||
+    return (m == R3D_MAGIC_YFRAME || m == R3D_MAGIC_HFRAME || m == R3D_MAGIC_QFRAME || m == R3D_MAGIC_CFRAME || m == R3D_MAGIC_XFRAME ||
             m == R3D_MAGIC_FRAME) &&
            h->len <= MAX_RECORD &&
            (h->screen & 0x3F) <= 1 && (h->cols == 400 || h->cols == 320);
@@ -146,6 +215,7 @@ static bool plausible(const R3dRecHeader *h)
 static u32 stored_len(const R3dRecHeader *h)
 {
     return h->magic == R3D_MAGIC_YFRAME || h->magic == R3D_MAGIC_HFRAME || h->magic == R3D_MAGIC_QFRAME ||
+                       h->magic == R3D_MAGIC_CFRAME ||
                        h->magic == R3D_MAGIC_XFRAME
                ? (h->len + 15) & ~15u
                : h->len;
@@ -337,6 +407,28 @@ static void video_frame(const R3dRecHeader *h, const u8 *payload, bool publish)
     const bool key = h->magic == R3D_MAGIC_FRAME || (h->screen & R3D_SCREEN_KEY);
     if (!key && !g_haveKey[sc])
         return; /* after a seek: wait for this screen's keyframe */
+    if (h->magic == R3D_MAGIC_CFRAME && publish) {
+        /* A picture on its own: straight into the texture's memory, not into g_cur and from there
+           (a copy of the whole frame less, 60 times a second with both screens at 30). g_cur no
+           longer holds the picture: the next frame must be a keyframe, and after C420 it is. */
+        LightLock_Lock(&g_lock);
+        Slot *s = free_slot(sc);
+        LightLock_Unlock(&g_lock);
+        if (!s) {
+            g_framesSkipped++;
+            return;
+        }
+        g_haveKey[sc] = false;
+        if (codec_c420_decode_strided(payload, h->len, s->px, cols, 240, PLAYER_TEX_W) != 0)
+            return;
+        g_framesShown++;
+        GSPGPU_FlushDataCache(s->px, PLAYER_TEX_W * cols * 2);
+        LightLock_Lock(&g_lock);
+        s->timeUs = h->timeUs;
+        s->state = 1;
+        LightLock_Unlock(&g_lock);
+        return;
+    }
     int bad;
     if (h->magic == R3D_MAGIC_FRAME) {
         bad = h->len < words * 2;
@@ -346,6 +438,8 @@ static void video_frame(const R3dRecHeader *h, const u8 *payload, bool publish)
         bad = codec_xr32_decode(payload, h->len, g_cur[sc], words, key);
     else if (h->magic == R3D_MAGIC_QFRAME)
         bad = codec_q565_decode(payload, h->len, g_cur[sc], words);
+    else if (h->magic == R3D_MAGIC_CFRAME)
+        bad = codec_c420_decode(payload, h->len, g_cur[sc], cols, 240);
     else if (h->magic == R3D_MAGIC_HFRAME) {
         static HuffTables tables;   /* the player's thread only */
         bad = huff_xr32_decode(payload, h->len, g_cur[sc], words, key, &tables);
@@ -551,6 +645,7 @@ static bool header_at(u64 off, R3dRecHeader *h)
 
 static void do_seek(u32 targetUs)
 {
+    pre_drop();   /* the reads below are this thread's own */
     clear_slots();
     queue_clear();
     audio_reset(targetUs); /* the old sound stops; the clock holds at the target meanwhile */
@@ -622,7 +717,41 @@ static bool decode_due(u32 now)
     if (!g_qCount)
         return false;
     Queued *q = &g_queue[g_qHead];
-    if (q->h.timeUs > now + DUE_US || !has_free_slot(q->h.screen & 0x3F))
+    if (q->h.timeUs > now + DUE_US)
+        return false;
+    const int qsc = q->h.screen & 0x3F;
+    if (q->h.magic == R3D_MAGIC_CFRAME && qsc <= 1) {
+        /* Behind: C420 frames are thinned evenly (every second one of the bottom screen, then of
+           the top one too) instead of dropped in runs as they fall late. Back to all of them
+           after THIN_CALM_US without a late frame. */
+        if (g_thin && now > g_thinUs + THIN_CALM_US) {
+            g_thin--;
+            g_thinUs = now;
+        }
+        if ((g_thin >= 1 && qsc == 1) || g_thin >= 2) {
+            if (++g_thinN[qsc] & 1u) {
+                g_framesThinned++;
+                queue_pop();
+                return true;
+            }
+        }
+    }
+    if (now > q->h.timeUs + LATE_US) {
+        if (g_thin < 2 && (!g_thin || now > g_thinUs + THIN_STEP_US))
+            g_thin++;
+        g_thinUs = now;
+        /* The player is behind (an Old 3DS decoding both screens at 30 frames a second): a frame
+           whose time has passed is not shown. A C420 frame is a picture on its own and the next
+           XR32 frame after it is a keyframe, so it is not decoded either; any other frame is
+           decoded for the ones after it. The sound went dry 355 times in a 40 s recording with
+           every late frame decoded and shown (O3DS 0.12.0, 2026-11-11). */
+        if (q->h.magic != R3D_MAGIC_CFRAME)
+            video_frame(&q->h, q->data, false);
+        g_framesLate++;
+        queue_pop();
+        return true;
+    }
+    if (!has_free_slot(q->h.screen & 0x3F))
         return false;
     video_frame(&q->h, q->data, true);
     queue_pop();
@@ -709,7 +838,9 @@ static void thread_main(void *arg)
             continue;
         }
         const u32 now = clock_us();
-        if (decode_due(now) || read_ahead(now))
+        /* the sound first when little of it is queued: it is the clock, and a gap in it is heard */
+        const bool hungry = g_audio && audio_queued() < AUDIO_LOW;
+        if ((hungry && read_ahead(now)) || decode_due(now) || read_ahead(now))
             continue;
         if (g_eof)
             check_end();
@@ -741,6 +872,9 @@ bool player_start(const char *name, u32 durationMs)
     g_lastVideoUs = 0;
     g_seekTo = -1;
     g_buf = malloc(READ_BUF);
+    g_pre = malloc(READ_BUF);
+    g_preState = 0;
+    LightEvent_Init(&g_preWake, RESET_ONESHOT);
     for (int sc = 0; sc < 2; sc++) {
         g_keys[sc] = malloc(KEYS_MAX * sizeof(Key));
         g_nKeys[sc] = 0;
@@ -752,7 +886,7 @@ bool player_start(const char *name, u32 durationMs)
         for (int i = 0; i < SLOTS; i++)
             g_slots[sc][i] = (Slot){linearAlloc(PLAYER_TEX_W * 400 * 2), 0, 0};
     }
-    bool ok = g_buf && g_cur[0] && g_cur[1];
+    bool ok = g_buf && g_pre && g_cur[0] && g_cur[1];
     for (int sc = 0; sc < 2; sc++)
         for (int i = 0; i < SLOTS; i++)
             ok = ok && g_slots[sc][i].px;
@@ -763,7 +897,8 @@ bool player_start(const char *name, u32 durationMs)
 
     /* sound: needs the DSP firmware (sdmc:/3ds/dspfirm.cdc, from DSP1); without it, video only */
     g_audio = false;
-    g_framesShown = g_framesSkipped = g_audioStarved = 0;
+    g_framesShown = g_framesSkipped = g_framesLate = g_audioStarved = 0;
+    g_thin = g_thinN[0] = g_thinN[1] = g_thinUs = g_framesThinned = 0;
     Result ndspRc = 0;
     g_ndspOk = g_hdr.audioRate && R_SUCCEEDED(ndspRc = ndspInit());
     if (g_hdr.audioRate && !g_ndspOk) /* most often no sdmc:/3ds/dspfirm.cdc */
@@ -790,6 +925,8 @@ bool player_start(const char *name, u32 durationMs)
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    /* above the decoder: it only asks the card for the next piece and sleeps until it is there */
+    g_preThread = threadCreate(pre_main, NULL, 8 * 1024, prio, -2, false);
     g_thread = threadCreate(thread_main, NULL, 32 * 1024, prio + 1, -2, false);
     if (!g_thread) {
         player_stop();
@@ -801,15 +938,24 @@ bool player_start(const char *name, u32 durationMs)
 void player_stop(void)
 {
     if (g_thread)
-        app_log("player: %lu pictures shown, %lu skipped (screen behind), sound %s, sound ran dry %lu times",
-                (unsigned long)g_framesShown, (unsigned long)g_framesSkipped, g_ndspOk ? "on" : "off",
-                (unsigned long)g_audioStarved);
+        app_log("player: %lu pictures shown, %lu skipped (screen behind), %lu late (player behind), %lu thinned, sound %s, "
+                "sound ran dry %lu times",
+                (unsigned long)g_framesShown, (unsigned long)g_framesSkipped, (unsigned long)g_framesLate,
+                (unsigned long)g_framesThinned,
+                g_ndspOk ? "on" : "off", (unsigned long)g_audioStarved);
     if (g_thread) {
         g_quit = true;
         LightEvent_Signal(&g_wake);
         threadJoin(g_thread, U64_MAX);
         threadFree(g_thread);
         g_thread = NULL;
+    }
+    if (g_preThread) {
+        g_quit = true;
+        LightEvent_Signal(&g_preWake);
+        threadJoin(g_preThread, U64_MAX);
+        threadFree(g_preThread);
+        g_preThread = NULL;
     }
     queue_clear();
     if (g_ndspOk) {
@@ -832,6 +978,8 @@ void player_stop(void)
     }
     free(g_buf);
     g_buf = NULL;
+    free(g_pre);
+    g_pre = NULL;
     for (int sc = 0; sc < 2; sc++) {
         free(g_keys[sc]);
         g_keys[sc] = NULL;
